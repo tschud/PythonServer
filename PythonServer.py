@@ -40,7 +40,7 @@ def upload_file():
             path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
             parameters = eval(request.form['json'])
 
-            return uploader(path, parameters)
+            return uploader(path, eval(parameters))
 
 
 
