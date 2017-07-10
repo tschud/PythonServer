@@ -1,155 +1,211 @@
-#import DiffScreenshot
 from PIL import Image, ImageDraw
 from math import sqrt
-import urllib, cStringIO
-#import pymsgbox
+import S3Uploader
 
 
-def load_image(image_path):
-    fle = cStringIO.StringIO(urllib.urlopen(image_path).read())
-    image = Image.open(fle)
-    width, height = image.size
-
-    return image, width, height
+class FailedMarkupCreation(RuntimeError):
+    ROBOT_CONTINUE_ON_FAILURE = True
 
 
-def count_pixels(image, x0, y0, x1, y1):
-    pixels = {}
+class Analyzer:
 
-    for coordinate_x in range(x0, x0+x1):
-        for coordinate_y in range(y0, y0+y1):
-            pixel = image.getpixel((coordinate_x, coordinate_y))
+    def __init__(self, path, target_color=(255,255,255), top_left_x=0, top_left_y=0, bottom_right_x=-1, bottom_right_y=-1, tolerance=10, size_in_percentage=False):
+        self.img = Image.open(path)
+        self.tolerance = tolerance
+        self.target_color = target_color
+        self.width, self.height = self.img.size
 
+        if size_in_percentage:
+            if bottom_right_x == -1:
+                bottom_right_x = 100
+            if bottom_right_y == -1:
+                bottom_right_y = 100
 
-            try:
-                pixels['(' + str(pixel[0]) + ',' + str(pixel[1])+ ',' + str(pixel[2]) + ')'] += 1
-            except KeyError:
-                pixels['(' + str(pixel[0]) + ',' + str(pixel[1]) + ',' + str(pixel[2]) + ')'] = 1
+            self.top_left_x = int(self.width * top_left_x / 100)
+            self.top_left_y = int(self.height * top_left_y / 100)
+            self.bottom_right_x = int(self.width * bottom_right_x / 100)
+            self.bottom_right_y = int(self.height * bottom_right_y / 100)
+        else:
+            if bottom_right_x == -1:
+                bottom_right_x = self.width
+            if bottom_right_y == -1:
+                bottom_right_y = self.height
 
-    return pixels
+            self.top_left_x = top_left_x
+            self.top_left_y = top_left_y
+            self.bottom_right_x = bottom_right_x
+            self.bottom_right_y = bottom_right_y
 
+        self.region = self.img.crop((self.top_left_x, self.top_left_y, self.bottom_right_x, self.bottom_right_y))
+        self.count_all_pixels_in_region()
 
+    def count_all_pixels_in_region(self):
+        self.pixels = {}
 
+        for coordinate_x in range(self.top_left_x, self.bottom_right_x + 1):
+            for coordinate_y in range(self.top_left_y, self.bottom_right_y + 1):
+                pixel = self.img.getpixel((coordinate_x, coordinate_y))
 
-def number_of_pixels_within_range(pixels_dict, wanted_color, tolerance=0):
-    number = 0
+                try:
+                    self.pixels[str(tuple(pixel[:3]))] += 1
+                except KeyError:
+                    self.pixels[str(tuple(pixel[:3]))] = 1
 
-    for key in pixels_dict.keys():
-        rgb = eval(key)
+        return self.pixels
 
-        diff = sqrt((wanted_color[0] - rgb[0])**2 + (wanted_color[1] - rgb[1])**2 + (wanted_color[2] - rgb[2]) **2)
-        if diff <= tolerance:
-            number += pixels_dict[key]
+    def count_similar_pixels(self):
+        number = 0
 
-    return number
-
-
-
-
-def count_pixels_with_tolerance(pixels_dict, tolerance=0):
-    pixels_dict_tolerance = {}
-
-    for key in pixels_dict.keys():
-        rgb = eval(key)
-        pixels_dict_tolerance[key] = number_of_pixels_within_range(pixels_dict, rgb, tolerance)
-
-    return pixels_dict_tolerance
-
-
-
-
-def number_of_pixels_percent(pixels_dict):
-    percentages = {}
-    sum_val = sum(pixels_dict.values())
-    for key in pixels_dict.keys():
-        value = pixels_dict[key]
-        perc = float(value) / float(sum_val) * 100
-        percentages[key] = round(perc, 2)
-
-    return percentages
-
-
-
-def check_percentage_equal_to(image_path, start_x, start_y, size_x, size_y, rgb, tolerance, percentage):
-    """
-    :param image_path: the path of the image to analyze, you want it to be the url of bucket
-    :param start_x: x coordinate of the top_left corner of the region to analyze
-    :param start_y: y coordinate of the top_left corner of the region to analyze
-    :param size_x: width of the region
-    :param size_y: height of the region
-    :param rgb: a tuple (int, int, int) or a string "(int,int,int)" - in the json file this is a list, needs to be converted to a tuple
-    :param tolerance: a number indicating the variability of the given color
-    :param percentage: the function returns true if the percentage of the color in the region matches this number
-            the percentage is in the format xx.x% - tolerance +-0.3%
-    :return: True if the found percentage is equal to the given percentage, the actual percentage otherwise
-    """
-
-
-    image_path = str(image_path); start_x = int(start_x); start_y = int(start_y); size_x = int(size_x); size_y = int(size_y)
-    rgb = eval(str(rgb)); tolerance = int(tolerance); percentage = float(percentage)
-
-
-    image, width, height = load_image(str(image_path))
-
-    box = (start_x, start_y, start_x + size_x, start_y + size_y)
-
-    region = image.crop(box)
-
-    width, height = region.size
-
-
-    area = width * height
-
-    pixels_dict = count_pixels(region, 0, 0, size_x, size_y)
-
-    #print(sum(pixels_dict.values()))
-    #print(area)
-    n_pix = number_of_pixels_within_range(pixels_dict, rgb, tolerance)
-
-    #highlight_pixels_within_range(region, rgb, tolerance)
-
-    #region.show()
-    #print(n_pix)
-
-    #pymsgbox.alert('area: ' + str(area) + '\nn_pix: ' + str(n_pix) + '\nperc: ' + str(percentage))
-
-    if round(float(n_pix)/float(area) * 100, 2) >= percentage - 0.3 and round(float(n_pix)/float(area) * 100, 2) <= percentage + 0.3:
-        return True
-    else:
-        return str(round(float(n_pix)/float(area) * 100, 2))
-
-
-
-def highlight_pixels_within_range(image, color, tol):
-    width, height = image.size
-    color = eval(color)
-
-    for coordinate_X in range(0, width):
-        for coordinate_Y in range(0, height):
-            pixel = image.getpixel((coordinate_X, coordinate_Y))
+        for key in self.pixels.keys():
+            rgb = eval(key)
 
             diff = sqrt(
-                (color[0] - pixel[0]) ** 2 + (color[1] - pixel[1]) ** 2 + (color[2] - pixel[2]) ** 2)
+                (self.target_color[0] - rgb[0]) ** 2 + (self.target_color[1] - rgb[1]) ** 2 + (self.target_color[2] - rgb[2]) ** 2)
+            if diff <= self.tolerance:
+                number += self.pixels[key]
 
-            if diff <= tol:
-                image.putpixel((coordinate_X, coordinate_Y), (100,240,255))
+        return number
+
+    def create_mask(self):
+        for coordinate_X in range(self.top_left_x, self.bottom_right_x + 1):
+            for coordinate_Y in range(self.top_left_y, self.bottom_right_y + 1):
+                pixel = self.img.getpixel((coordinate_X, coordinate_Y))
+
+                diff = sqrt((self.target_color[0] - pixel[0]) ** 2 + (self.target_color[1] - pixel[1]) ** 2 + (self.target_color[2] - pixel[2]) ** 2)
+
+                if diff >= self.tolerance:
+                    self.img.putpixel((coordinate_X, coordinate_Y), (0, 0, 0))
+
+        draw = ImageDraw.Draw(self.img)
+        for i in range(5):
+            rect_start = (self.top_left_x - i, self.top_left_y - i)
+            rect_end = (self.bottom_right_x + i, self.bottom_right_y + i)
+            draw.rectangle((rect_start, rect_end), outline=(100, 240, 255))
+
+    def perform_expected_percentage_check(self, expected_percentage, show_region=False, percentage_range=0.5):
+        number_of_pixels = self.count_similar_pixels()
+
+        if show_region:
+            self.create_mask()
+            self.img.show()
+
+        percentage = round(float(number_of_pixels) / sum(self.pixels.values()) * 100, 2)
+
+        if percentage >= expected_percentage - percentage_range and percentage <= expected_percentage + percentage_range:
+            return True, percentage
+        else:
+            return False, percentage
 
 
+class MultipleAnalysis:
 
-if __name__ == '__main__':
-    # image, width, height = load_image('test red.png')
-    # pixels_dict = count_pixels(image, 0, 0, width, height)
-    #print(number_of_pixels_within_range(pixels_dict, (255, 0, 0), 10))
-    # print('dictionary', pixels_dict)
-    # print('with tolerance', count_pixels_with_tolerance(count_pixels(image, 0, 0, width, height), 100))
-    # print('percent', number_of_pixels_percent(pixels_dict))
-    # print('close to red', number_of_pixels_within_range(pixels_dict, (255,95,83), 200))
-    '''for x in range(900, 2901, 1000):
-        for y in range(515, 1316, 400):
+    def __init__(self, tests_list):
+        self.img = Image.open(tests_list["path"])
+        self.tests_list = tests_list
 
-            if x == 2900 and y == 1315:
-                rgb = '(64,249,97)'
-            else:
-                rgb = '(255,95,83)'
-'''
-    print(check_percentage_equal_to('https://a360ci.s3.amazonaws.com/difftool/screenshots/test/test_720.png',  0,  0, 250, 250, '(250,53,85)',  120,  8.3))
+    def run_multiple_tests(self, show_region=False):
+
+        results = {}
+
+        for case in self.tests_list["tests"]:
+            analyser = Analyzer(
+                path=self.tests_list["path"],
+                target_color=case["target_color"],
+                top_left_x=case["top_left_x"],
+                top_left_y=case["top_left_y"],
+                bottom_right_x=case["bottom_right_x"],
+                bottom_right_y=case["bottom_right_y"],
+                tolerance=case["tolerance"],
+                size_in_percentage=case["size_in_percentage"]
+            )
+
+            results[case["name"]] = analyser.perform_expected_percentage_check(
+                expected_percentage=case["expected_percentage"],
+                show_region=False,
+                percentage_range=case["percentage_range"]
+            )
+
+            if case["show_region"]:
+                self.create_multiple_mask(
+                    top_left_x=case["top_left_x"],
+                    top_left_y=case["top_left_y"],
+                    bottom_right_x=case["bottom_right_x"],
+                    bottom_right_y=case["bottom_right_y"],
+                    PIL_image=self.img,
+                    target_color=case["target_color"],
+                    tolerance=case["tolerance"]
+                )
+
+        if show_region:
+            path = '/Users/administrator/Desktop/PythonServer/LocalUploads/markup_result.png'
+            self.img.save(path, "PNG")
+            url = S3Uploader.uploadOnly(path)
+            return results, url
+
+        return results
+
+    def create_multiple_mask(self,top_left_x, top_left_y, bottom_right_x, bottom_right_y, PIL_image, target_color, tolerance):
+        for coordinate_X in range(top_left_x, bottom_right_x + 1):
+            for coordinate_Y in range(top_left_y, bottom_right_y + 1):
+                pixel = PIL_image.getpixel((coordinate_X, coordinate_Y))
+
+                diff = sqrt((target_color[0] - pixel[0]) ** 2 + (target_color[1] - pixel[1]) ** 2 + (target_color[2] - pixel[2]) ** 2)
+
+                if diff >= tolerance:
+                    PIL_image.putpixel((coordinate_X, coordinate_Y), (0, 0, 0))
+
+        draw = ImageDraw.Draw(PIL_image)
+        for i in range(5):
+            rect_start = (top_left_x - i, top_left_y - i)
+            rect_end = (bottom_right_x + i, bottom_right_y + i)
+            draw.rectangle((rect_start, rect_end), outline=(100, 240, 255))
+
+
+def set_image_for_multiple_tests(empty_dictionary, image_path):
+    empty_dictionary["path"] = image_path
+    empty_dictionary["tests"] = []
+    return empty_dictionary
+
+
+def add_image_in_multiple_test(dictionary_with_image_path_set, name="test", target_color=(0,0,0), top_left_x=0, top_left_y=0, bottom_right_x=-1, bottom_right_y=-1, tolerance=0, size_in_percentage=False, expected_percentage=0, show_region=False, percentage_range=0.5, bottom_right_delta=False):
+
+    dictionary_with_image_path_set = eval(str(dictionary_with_image_path_set)); name = eval(str(name)); target_color = eval(str(target_color)); top_left_x = int(top_left_x); top_left_y = int(top_left_y); bottom_right_x = int(bottom_right_x); bottom_right_y = int(bottom_right_y); tolerance = eval(str(tolerance)); size_in_percentage = eval(str(size_in_percentage)); expected_percentage = eval(str(expected_percentage)); show_region = eval(str(show_region)); percentage_range = eval(str(percentage_range)); bottom_right_delta = eval(str(bottom_right_delta))
+
+    if not bottom_right_delta:
+        dict = {
+            "name": name,
+            "target_color": target_color,
+            "top_left_x": top_left_x,
+            "top_left_y": top_left_y,
+            "bottom_right_x": bottom_right_x,
+            "bottom_right_y": bottom_right_y,
+            "tolerance": tolerance,
+            "size_in_percentage": size_in_percentage,
+            "expected_percentage": expected_percentage,
+            "show_region": show_region,
+            "percentage_range": percentage_range
+        }
+    else:
+        dict = {
+            "name": name,
+            "target_color": target_color,
+            "top_left_x": top_left_x,
+            "top_left_y": top_left_y,
+            "bottom_right_x": bottom_right_x + top_left_x,
+            "bottom_right_y": bottom_right_y + top_left_y,
+            "tolerance": tolerance,
+            "size_in_percentage": size_in_percentage,
+            "expected_percentage": expected_percentage,
+            "show_region": show_region,
+            "percentage_range": percentage_range
+        }
+
+    dictionary_with_image_path_set["tests"].append(dict)
+
+    return dictionary_with_image_path_set
+
+
+def run_multiple_tests(dictionary_with_path_and_tests, show_region=True):
+    mult = MultipleAnalysis(dictionary_with_path_and_tests)
+    results = mult.run_multiple_tests(show_region=show_region)
+    return str(results)
